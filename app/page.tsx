@@ -43,7 +43,7 @@ export default function StockDashboard() {
       <header className="mb-12 flex justify-between items-end">
         <div>
           <h1 className="text-4xl font-bold text-white tracking-tight">
-            Quant<span className="text-blue-500">View</span>
+            Clouds
           </h1>
           <p className="text-slate-400 mt-2">Google-Grade Portfolio Intelligence</p>
         </div>

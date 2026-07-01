@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'QuantView Screener',
+  title: 'Clouds',
   description: 'Google-Grade Portfolio Intelligence',
 };
 
