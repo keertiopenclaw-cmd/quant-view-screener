@@ -4,14 +4,15 @@ import React, { useEffect, useState } from 'react';
 
 type Stock = {
   ticker: string;
-  price: number;
-  change: number;
-  pe: number | string;
+  group: string;
+  price: number | null;
+  change: number | null;
+  pe: number | null;
   summary: string;
 };
 
 type NewsItem = {
-  id: number;
+  id: number | string;
   ticker: string;
   headline: string;
   source: string;
@@ -20,11 +21,21 @@ type NewsItem = {
 
 type Tab = 'watchlist' | 'news';
 
+function groupBy<T>(arr: T[], key: keyof T): Record<string, T[]> {
+  return arr.reduce((acc, item) => {
+    const k = String(item[key]);
+    if (!acc[k]) acc[k] = [];
+    acc[k].push(item);
+    return acc;
+  }, {} as Record<string, T[]>);
+}
+
 export default function StockDashboard() {
-  const [stocks, setStocks] = useState<Stock[]>([]);
-  const [news, setNews] = useState<NewsItem[]>([]);
+  const [stocks, setStocks]   = useState<Stock[]>([]);
+  const [news, setNews]       = useState<NewsItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [tab, setTab] = useState<Tab>('watchlist');
+  const [tab, setTab]         = useState<Tab>('watchlist');
+  const [lastUpdated, setLastUpdated] = useState<string>('');
 
   const fetchData = async () => {
     try {
@@ -33,9 +44,10 @@ export default function StockDashboard() {
         fetch('/api/news'),
       ]);
       const stocksData = await stocksRes.json();
-      const newsData = await newsRes.json();
-      setStocks(stocksData);
-      setNews(newsData);
+      const newsData   = await newsRes.json();
+      if (Array.isArray(stocksData)) setStocks(stocksData);
+      if (Array.isArray(newsData))   setNews(newsData);
+      setLastUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
     } catch (err) {
       console.error('API Error:', err);
     } finally {
@@ -54,11 +66,13 @@ export default function StockDashboard() {
       <div className="min-h-screen bg-[#f5f5f7] flex items-center justify-center px-6">
         <div className="text-center">
           <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-neutral-300 border-t-neutral-900" />
-          <p className="mt-4 text-sm font-medium text-neutral-500">Loading markets...</p>
+          <p className="mt-4 text-sm font-medium text-neutral-500">Loading live markets...</p>
         </div>
       </div>
     );
   }
+
+  const grouped = groupBy(stocks, 'group');
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-neutral-900">
@@ -66,38 +80,29 @@ export default function StockDashboard() {
 
         {/* Header */}
         <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-neutral-100">
-          <div className="flex items-center justify-between px-5 pt-5 pb-4">
+          <div className="flex items-center justify-between px-5 pt-5 pb-2">
             <button className="text-3xl leading-none text-neutral-700">&#8943;</button>
             <div className="text-center">
               <h1 className="text-2xl font-bold tracking-tight">Clouds</h1>
-              <p className="mt-1 text-xs text-neutral-500">My watch list</p>
+              <p className="mt-0.5 text-[10px] text-neutral-400">Updated {lastUpdated || '—'}</p>
             </div>
             <button className="text-4xl leading-none font-light text-neutral-700">+</button>
           </div>
 
           {/* Tabs */}
-          <div className="px-5 pb-4">
+          <div className="px-5 pb-3">
             <div className="inline-flex rounded-2xl bg-neutral-100 p-1">
-              <button
-                onClick={() => setTab('watchlist')}
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  tab === 'watchlist'
-                    ? 'bg-white text-neutral-900 shadow-sm'
-                    : 'text-neutral-500'
-                }`}
-              >
-                Watchlist
-              </button>
-              <button
-                onClick={() => setTab('news')}
-                className={`rounded-2xl px-4 py-2 text-sm font-semibold transition ${
-                  tab === 'news'
-                    ? 'bg-white text-neutral-900 shadow-sm'
-                    : 'text-neutral-500'
-                }`}
-              >
-                News
-              </button>
+              {(['watchlist', 'news'] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={`rounded-2xl px-4 py-2 text-sm font-semibold capitalize transition ${
+                    tab === t ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500'
+                  }`}
+                >
+                  {t === 'watchlist' ? 'Watchlist' : 'News'}
+                </button>
+              ))}
             </div>
           </div>
         </div>
@@ -105,69 +110,80 @@ export default function StockDashboard() {
         {/* Main Content */}
         <main className="pb-28">
           {tab === 'watchlist' ? (
-            <section className="px-4 pt-3">
-              <p className="px-1 pb-3 text-xs font-bold uppercase tracking-[0.18em] text-neutral-400">
-                Stocks
-              </p>
-              <div className="divide-y divide-neutral-100">
-                {stocks.map((stock) => (
-                  <div
-                    key={stock.ticker}
-                    className="flex items-center justify-between gap-3 rounded-2xl px-2 py-4 transition hover:bg-neutral-50 active:bg-neutral-100"
-                  >
-                    <div className="flex min-w-0 items-center gap-3">
-                      <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-900 text-sm font-bold text-white">
-                        {stock.ticker.slice(0, 2)}
-                      </div>
-                      <div className="min-w-0">
-                        <p className="truncate text-base font-semibold tracking-tight text-neutral-900">
-                          {stock.ticker}
-                        </p>
-                        <p className="truncate text-sm text-neutral-500 max-w-[180px]">
-                          {stock.summary}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="shrink-0 text-right">
-                      <p className="text-base font-semibold text-neutral-900">
-                        {stock.price.toFixed(2)}
-                      </p>
-                      <p
-                        className={`text-sm font-medium ${
-                          stock.change >= 0 ? 'text-emerald-600' : 'text-red-500'
-                        }`}
+            <section className="px-4 pt-3 space-y-6">
+              {Object.entries(grouped).map(([group, groupStocks]) => (
+                <div key={group}>
+                  <p className="px-1 pb-2 text-xs font-bold uppercase tracking-[0.18em] text-neutral-400">
+                    {group}
+                  </p>
+                  <div className="divide-y divide-neutral-100">
+                    {groupStocks.map((stock) => (
+                      <div
+                        key={stock.ticker}
+                        className="flex items-center justify-between gap-3 rounded-2xl px-2 py-4 transition hover:bg-neutral-50 active:bg-neutral-100"
                       >
-                        {stock.change >= 0 ? '+' : ''}{stock.change.toFixed(2)}%
-                      </p>
-                    </div>
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+                            {stock.ticker.replace('.L','').replace('.NS','').slice(0,4)}
+                          </div>
+                          <div className="min-w-0">
+                            <p className="truncate text-base font-semibold tracking-tight text-neutral-900">
+                              {stock.ticker}
+                            </p>
+                            <p className="text-xs text-neutral-400">
+                              PE: {stock.pe !== null ? stock.pe : '—'}
+                            </p>
+                          </div>
+                        </div>
+                        <div className="shrink-0 text-right">
+                          <p className="text-base font-semibold text-neutral-900">
+                            {stock.price !== null ? stock.price.toFixed(2) : '—'}
+                          </p>
+                          <p
+                            className={`text-sm font-medium ${
+                              stock.change === null ? 'text-neutral-400' :
+                              stock.change >= 0 ? 'text-emerald-600' : 'text-red-500'
+                            }`}
+                          >
+                            {stock.change !== null
+                              ? `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%`
+                              : '—'}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
+                </div>
+              ))}
             </section>
           ) : (
             <section className="px-4 pt-3">
               <p className="px-1 pb-3 text-xs font-bold uppercase tracking-[0.18em] text-neutral-400">
                 Latest News
               </p>
-              <div className="space-y-3">
-                {news.map((item) => (
-                  <article
-                    key={item.id}
-                    className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4"
-                  >
-                    <div className="mb-2 flex items-center justify-between gap-3">
-                      <span className="rounded-full bg-white border border-neutral-200 px-3 py-1 text-xs font-bold text-neutral-700 shadow-sm">
-                        {item.ticker}
-                      </span>
-                      <span className="text-xs text-neutral-400">{item.time}</span>
-                    </div>
-                    <h2 className="text-sm font-semibold leading-6 text-neutral-900">
-                      {item.headline}
-                    </h2>
-                    <p className="mt-2 text-xs text-neutral-400">{item.source}</p>
-                  </article>
-                ))}
-              </div>
+              {news.length === 0 ? (
+                <p className="text-sm text-neutral-400 text-center py-10">No news available right now.</p>
+              ) : (
+                <div className="space-y-3">
+                  {news.map((item) => (
+                    <article
+                      key={item.id}
+                      className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4"
+                    >
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <span className="rounded-full bg-white border border-neutral-200 px-3 py-1 text-xs font-bold text-neutral-700 shadow-sm">
+                          {item.ticker}
+                        </span>
+                        <span className="text-xs text-neutral-400">{item.time}</span>
+                      </div>
+                      <h2 className="text-sm font-semibold leading-6 text-neutral-900">
+                        {item.headline}
+                      </h2>
+                      <p className="mt-2 text-xs text-neutral-400">{item.source}</p>
+                    </article>
+                  ))}
+                </div>
+              )}
             </section>
           )}
         </main>
@@ -186,7 +202,6 @@ export default function StockDashboard() {
               </svg>
               <span className="text-xs font-medium">Watchlist</span>
             </button>
-
             <button
               onClick={() => setTab('news')}
               className={`flex flex-col items-center gap-1 transition ${
@@ -198,14 +213,12 @@ export default function StockDashboard() {
               </svg>
               <span className="text-xs font-medium">News</span>
             </button>
-
             <button className="flex flex-col items-center gap-1 text-neutral-400">
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
               </svg>
               <span className="text-xs font-medium">Explore</span>
             </button>
-
             <button className="flex flex-col items-center gap-1 text-neutral-400">
               <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.8} d="M4 6h16M4 12h10" />

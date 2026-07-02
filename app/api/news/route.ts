@@ -1,64 +1,44 @@
 import { NextResponse } from 'next/server';
 
-const news = [
-  {
-    id: 1,
-    ticker: 'NVDA',
-    headline: 'Nvidia data center revenue accelerates as AI infrastructure spending hits new highs',
-    source: 'Clouds News',
-    time: '2m ago',
-  },
-  {
-    id: 2,
-    ticker: 'MSFT',
-    headline: 'Microsoft Azure growth re-accelerates driven by enterprise Copilot adoption',
-    source: 'Clouds News',
-    time: '14m ago',
-  },
-  {
-    id: 3,
-    ticker: 'AMZN',
-    headline: 'Amazon AWS margin expansion continues as cost optimisation cycle matures',
-    source: 'Clouds News',
-    time: '31m ago',
-  },
-  {
-    id: 4,
-    ticker: 'TSLA',
-    headline: 'Tesla shares volatile as investors balance delivery outlook vs FSD progress',
-    source: 'Clouds News',
-    time: '45m ago',
-  },
-  {
-    id: 5,
-    ticker: 'META',
-    headline: 'Meta ad revenue holds firm while Llama AI investments accelerate',
-    source: 'Clouds News',
-    time: '58m ago',
-  },
-  {
-    id: 6,
-    ticker: 'GOOGL',
-    headline: 'Google Search resilient; Gemini integration across Workspace gains traction',
-    source: 'Clouds News',
-    time: '1h ago',
-  },
-  {
-    id: 7,
-    ticker: 'AMD',
-    headline: 'AMD MI300X gaining share in AI inference as hyperscaler demand broadens',
-    source: 'Clouds News',
-    time: '1h 15m ago',
-  },
-  {
-    id: 8,
-    ticker: 'AAPL',
-    headline: 'Apple Services revenue hits record; iPhone 16 cycle showing steady demand',
-    source: 'Clouds News',
-    time: '1h 30m ago',
-  },
-];
+export const dynamic = 'force-dynamic';
+
+const TICKERS = ['NVDA', 'AAPL', 'MSFT', 'GOOGL', 'META', 'TSLA', 'AMZN', 'AMD', 'PLTR', 'BT-A.L'];
 
 export async function GET() {
-  return NextResponse.json(news);
+  const key = process.env.FINNHUB_API_KEY;
+  if (!key) {
+    return NextResponse.json({ error: 'FINNHUB_API_KEY not set' }, { status: 500 });
+  }
+
+  const now   = Math.floor(Date.now() / 1000);
+  const since = now - 86400; // last 24 hours
+
+  const allNews = await Promise.all(
+    TICKERS.map(async (ticker) => {
+      try {
+        const res = await fetch(
+          `https://finnhub.io/api/v1/company-news?symbol=${encodeURIComponent(ticker)}&from=${new Date(since * 1000).toISOString().slice(0,10)}&to=${new Date(now * 1000).toISOString().slice(0,10)}&token=${key}`,
+          { cache: 'no-store' }
+        );
+        if (!res.ok) return [];
+        const data: { id: number; headline: string; source: string; datetime: number }[] = await res.json();
+        return (data || []).slice(0, 2).map((item, i) => ({
+          id:       item.id || ticker + i,
+          ticker,
+          headline: item.headline,
+          source:   item.source,
+          time:     new Date(item.datetime * 1000).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
+        }));
+      } catch {
+        return [];
+      }
+    })
+  );
+
+  const flat = allNews.flat().sort((a, b) => {
+    // sort by time descending — use original datetime via re-fetch order (already newest first from Finnhub)
+    return 0;
+  });
+
+  return NextResponse.json(flat.slice(0, 20));
 }
