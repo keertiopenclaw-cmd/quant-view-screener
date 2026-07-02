@@ -3,10 +3,14 @@ import { NextResponse } from 'next/server';
 export const dynamic = 'force-dynamic';
 
 const GROUPS: Record<string, string[]> = {
-  'US - AI & Tech': ['NVDA', 'AMD', 'MSFT', 'GOOGL', 'META', 'AAPL', 'AMZN', 'TSLA'],
-  'US - Other':     ['PLTR', 'CRWD', 'NET', 'SNOW'],
-  'UK':             ['VOD.L', 'BT-A.L', 'HSBA.L', 'LLOY.L'],
-  'India':          ['RELIANCE.NS', 'TCS.NS', 'INFY.NS', 'HDFCBANK.NS', 'WIPRO.NS'],
+  'AI & Semiconductors': ['NVDA', 'AMD', 'SMCI', 'QBTS'],
+  'Big Tech': ['MSFT', 'GOOGL', 'META', 'AAPL', 'AMZN', 'TSLA'],
+  'Cybersecurity & Cloud': ['PLTR', 'CRWD', 'NET', 'SNOW', 'IOT'],
+  'Fintech & Finance': ['HOOD', 'UPST', 'MQ', 'UNH'],
+  'AI Software': ['TTD', 'FRSH', 'PATH', 'SOUN', 'VERI', 'BBAI'],
+  'Energy & Mining': ['IREN', 'WULF', 'CLSK', 'APLD', 'UEC', 'CPER'],
+  'Healthcare & Biotech': ['NVO', 'BAX', 'INOD', 'ABSI'],
+  'Other US': ['LYFT', 'LAES', 'WDC', 'RDW', 'TGLS'],
 };
 
 const ALL_TICKERS = Object.values(GROUPS).flat();
@@ -31,15 +35,14 @@ export async function GET() {
         fetchFinnhub(`/stock/metric?symbol=${encodeURIComponent(ticker)}&metric=all`),
       ]);
 
-      const price  = quote?.c ?? null;
-      const change = quote?.dp ?? null;
+      const price  = quote?.c   ?? null;
+      const change = quote?.dp  ?? null;
       const pe     = metrics?.metric?.peNormalizedAnnual
                   ?? metrics?.metric?.peTTM
                   ?? metrics?.metric?.['peExclExtraTTM']
                   ?? null;
 
-      // find which group this ticker belongs to
-      const group = Object.entries(GROUPS).find(([, tickers]) => tickers.includes(ticker))?.[0] ?? 'Other';
+      const group = Object.entries(GROUPS).find(([, tickers]) => tickers.includes(ticker))?.[0] ?? 'Other US';
 
       return {
         ticker,
