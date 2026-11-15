@@ -1,6 +1,7 @@
 'use client';
 
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { MAX_EXTRA_TICKERS, sanitizeTickers, TICKER_PATTERN } from '@/lib/tickers';
 
 type Stock = {
   ticker: string;
@@ -23,126 +24,295 @@ type NewsItem = {
 
 type Tab = 'watchlist' | 'news' | 'explore' | 'portfolio';
 
-function groupBy<T>(arr: T[], key: keyof T): Record<string, T[]> {
-  return arr.reduce((acc, item) => {
-    const k = String(item[key]);
-    if (!acc[k]) acc[k] = [];
-    acc[k].push(item);
-    return acc;
-  }, {} as Record<string, T[]>);
-}
-
-function getSentiment(headline: string): { label: string; color: string } {
-  const h = headline.toLowerCase();
-  const bullish = ['surge', 'soar', 'rally', 'beat', 'record', 'buy', 'upgrade', 'profit', 'growth', 'gain', 'rise', 'jump', 'strong', 'bull', 'boost', 'positive', 'outperform', 'high'];
-  const bearish = ['fall', 'drop', 'plunge', 'miss', 'loss', 'sell', 'downgrade', 'cut', 'warn', 'decline', 'weak', 'bear', 'crash', 'risk', 'concern', 'lower', 'below', 'lawsuit', 'fine', 'probe'];
-  const bScore = bullish.filter(w => h.includes(w)).length;
-  const rScore = bearish.filter(w => h.includes(w)).length;
-  if (bScore > rScore) return { label: '🟢 Bullish', color: 'text-emerald-600 bg-emerald-50 border-emerald-200' };
-  if (rScore > bScore) return { label: '🔴 Bearish', color: 'text-red-500 bg-red-50 border-red-200' };
-  return { label: '⚪ Neutral', color: 'text-neutral-500 bg-neutral-50 border-neutral-200' };
-}
+const TABS: { id: Tab; label: string }[] = [
+  { id: 'watchlist', label: 'Watchlist' },
+  { id: 'portfolio', label: 'Portfolio' },
+  { id: 'news', label: 'News' },
+  { id: 'explore', label: 'Explore' },
+];
 
 const LS_HIDDEN = 'clouds_hidden';
 const LS_EXTRA = 'clouds_extra';
 const LS_PORTFOLIO = 'clouds_portfolio';
 
+const EXPLORE_SUGGESTIONS = [
+  'COIN', 'RBLX', 'UBER', 'ABNB', 'SPOT', 'ROKU', 'SQ', 'PYPL', 'SHOP', 'DDOG',
+  'ZS', 'OKTA', 'MDB', 'BILL', 'GTLB', 'ARM', 'SMCI', 'QBTS', 'RDW', 'IONQ',
+  'TSM', 'ASML', 'INTC', 'QCOM', 'AVGO', 'MRVL', 'ON', 'TXN', 'ADI', 'KLAC',
+];
+
+const BULLISH = ['surge', 'soar', 'rally', 'beat', 'beats', 'record', 'upgrade', 'profit', 'growth', 'jump', 'outperform', 'gain', 'gains', 'rise', 'rises', 'rose', 'strong', 'bullish'];
+const BEARISH = ['plunge', 'miss', 'downgrade', 'warn', 'decline', 'lawsuit', 'probe', 'slump', 'tumble', 'crash', 'drop', 'drops', 'dropped', 'fall', 'falls', 'fell', 'loss', 'losses', 'cut', 'cuts', 'weak', 'selloff', 'slide', 'slides', 'bearish'];
+
+function groupBy<T>(arr: T[], key: keyof T): Record<string, T[]> {
+  return arr.reduce((acc, item) => {
+    const group = String(item[key]);
+    if (!acc[group]) acc[group] = [];
+    acc[group].push(item);
+    return acc;
+  }, {} as Record<string, T[]>);
+}
+
+function mentions(headline: string, word: string): boolean {
+  return new RegExp(`\\b${word}\\b`, 'i').test(headline);
+}
+
+function getSentiment(headline: string): { label: string; color: string } {
+  const bullish = BULLISH.filter((word) => mentions(headline, word)).length;
+  const bearish = BEARISH.filter((word) => mentions(headline, word)).length;
+  if (bullish > bearish) return { label: 'Bullish', color: 'text-emerald-800 bg-emerald-50 border-emerald-200' };
+  if (bearish > bullish) return { label: 'Bearish', color: 'text-red-800 bg-red-50 border-red-200' };
+  return { label: 'Neutral', color: 'text-neutral-700 bg-neutral-50 border-neutral-200' };
+}
+
 function lsGet<T>(key: string, fallback: T): T {
   if (typeof window === 'undefined') return fallback;
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+  try {
+    const value = localStorage.getItem(key);
+    return value ? (JSON.parse(value) as T) : fallback;
+  } catch {
+    return fallback;
+  }
 }
-function lsSet(key: string, val: unknown) {
+
+function lsSet(key: string, value: unknown) {
   if (typeof window === 'undefined') return;
-  try { localStorage.setItem(key, JSON.stringify(val)); } catch {}
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    /* Storage can be full or blocked. The screen still works for this visit. */
+  }
+}
+
+function formatPrice(price: number | null): string {
+  if (price === null) return '—';
+  return price.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+function formatPercent(change: number | null): string {
+  if (change === null) return '—';
+  const sign = change > 0 ? '+' : '';
+  return `${sign}${change.toFixed(2)}%`;
+}
+
+function formatMoney(value: number): string {
+  return value.toLocaleString('en-US', { style: 'currency', currency: 'USD' });
+}
+
+function changeClass(change: number | null): string {
+  if (change === null || change === 0) return 'text-neutral-600';
+  return change > 0 ? 'text-emerald-700' : 'text-red-700';
+}
+
+function safeHref(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === 'https:' || parsed.protocol === 'http:') return parsed.href;
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function readError(response: Response): Promise<string> {
+  try {
+    const data: unknown = await response.json();
+    if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string' && data.error.length < 300) {
+      return data.error;
+    }
+  } catch {
+    /* A platform timeout can return HTML. Fall through to a plain message. */
+  }
+  if (response.status === 504 || response.status === 503) return 'Market data took too long to respond.';
+  return 'Market data could not be loaded.';
+}
+
+function TickerAvatar({ ticker }: { ticker: string }) {
+  return (
+    <div aria-hidden="true" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
+      {ticker.slice(0, 4)}
+    </div>
+  );
+}
+
+function RefreshIcon() {
+  return (
+    <svg aria-hidden="true" className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M21 12a9 9 0 11-2.2-5.8M21 4v6h-6" />
+    </svg>
+  );
 }
 
 export default function StockDashboard() {
-  const [stocks, setStocks]     = useState<Stock[]>([]);
-  const [news, setNews]         = useState<NewsItem[]>([]);
-  const [loading, setLoading]   = useState(true);
-  const [tab, setTab]           = useState<Tab>('watchlist');
-  const [lastUpdated, setLastUpdated] = useState<string>('');
-  const [isStale, setIsStale]   = useState(false);
-  const [search, setSearch]     = useState('');
+  const [stocks, setStocks] = useState<Stock[]>([]);
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [tab, setTab] = useState<Tab>('watchlist');
+  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [stocksError, setStocksError] = useState<string | null>(null);
+  const [stocksWarning, setStocksWarning] = useState<string | null>(null);
+  const [newsError, setNewsError] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
   const [exploreSearch, setExploreSearch] = useState('');
-  const [hidden, setHidden]     = useState<string[]>([]);
+  const [hidden, setHidden] = useState<string[]>([]);
   const [addInput, setAddInput] = useState('');
+  const [addMessage, setAddMessage] = useState('');
   const [extraTickers, setExtraTickers] = useState<string[]>([]);
-  const [showAdd, setShowAdd]   = useState(false);
-  const [newsFilter, setNewsFilter] = useState<string>('');
-  // portfolio: { [ticker]: shares }
+  const [showAdd, setShowAdd] = useState(false);
+  const [newsFilter, setNewsFilter] = useState('');
   const [portfolio, setPortfolio] = useState<Record<string, number>>({});
   const [editPortfolio, setEditPortfolio] = useState<Record<string, string>>({});
   const [editingPortfolio, setEditingPortfolio] = useState(false);
+  const inFlight = useRef(false);
+  const queued = useRef(false);
 
-  // Hydrate from localStorage on mount
   useEffect(() => {
-    setHidden(lsGet<string[]>(LS_HIDDEN, []));
-    setExtraTickers(lsGet<string[]>(LS_EXTRA, []));
+    setHidden(sanitizeTickers(lsGet<string[]>(LS_HIDDEN, []), 100));
+    setExtraTickers(sanitizeTickers(lsGet<string[]>(LS_EXTRA, [])));
     setPortfolio(lsGet<Record<string, number>>(LS_PORTFOLIO, {}));
   }, []);
 
   const fetchData = useCallback(async () => {
-    const staleTimer = setTimeout(() => setIsStale(true), 35000);
+    if (inFlight.current) {
+      queued.current = true;
+      return;
+    }
+    inFlight.current = true;
+    setRefreshing(true);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 25_000);
+    const requestedExtra = new Set(sanitizeTickers(lsGet<string[]>(LS_EXTRA, [])));
+
     try {
-      const extra = lsGet<string[]>(LS_EXTRA, []);
-      const extraParam = extra.length ? `?extra=${extra.join(',')}` : '';
-      const [stocksRes, newsRes] = await Promise.all([
-        fetch(`/api/stocks${extraParam}`),
-        fetch('/api/news'),
+      const extraParam = requestedExtra.size
+        ? `?extra=${Array.from(requestedExtra).map(encodeURIComponent).join(',')}`
+        : '';
+      const [stocksResult, newsResult] = await Promise.all([
+        fetch(`/api/stocks${extraParam}`, { cache: 'no-store', signal: controller.signal }),
+        fetch('/api/news', { cache: 'no-store', signal: controller.signal }),
       ]);
-      if (!stocksRes.ok || !newsRes.ok) { setIsStale(true); return; }
-      const stocksData = await stocksRes.json();
-      const newsData   = await newsRes.json();
-      if (Array.isArray(stocksData)) setStocks(stocksData);
-      if (Array.isArray(newsData))   setNews(newsData);
-      setLastUpdated(new Date().toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
-      setIsStale(false);
-      clearTimeout(staleTimer);
-    } catch {
-      setIsStale(true);
+
+      if (stocksResult.ok) {
+        const stocksData: unknown = await stocksResult.json();
+        if (Array.isArray(stocksData)) {
+          const savedExtra = new Set(sanitizeTickers(lsGet<string[]>(LS_EXTRA, [])));
+          setStocks(
+            (stocksData as Stock[]).filter(
+              (stock) => !requestedExtra.has(stock.ticker) || savedExtra.has(stock.ticker)
+            )
+          );
+          setStocksError(null);
+          setStocksWarning(stocksResult.headers.get('x-market-warning'));
+          setUpdatedAt(new Date().toISOString());
+        } else {
+          setStocksError('Market data came back in an unexpected format.');
+        }
+      } else {
+        setStocksError(await readError(stocksResult));
+        setStocksWarning(null);
+      }
+
+      if (newsResult.ok) {
+        const newsData: unknown = await newsResult.json();
+        if (Array.isArray(newsData)) {
+          setNews(newsData as NewsItem[]);
+          setNewsError(null);
+        } else {
+          setNewsError('News came back in an unexpected format.');
+        }
+      } else {
+        setNewsError(await readError(newsResult));
+      }
+    } catch (error) {
+      const aborted = error instanceof DOMException && error.name === 'AbortError';
+      const message = aborted
+        ? 'Market data took too long to respond. Try again.'
+        : 'Could not reach the market data service.';
+      setStocksError(message);
+      setNewsError(message);
     } finally {
+      window.clearTimeout(timeout);
+      inFlight.current = false;
+      setRefreshing(false);
       setLoading(false);
+      if (queued.current) {
+        queued.current = false;
+        void fetchData();
+      }
     }
   }, []);
 
   useEffect(() => {
-    fetchData();
-    const interval = setInterval(fetchData, 30000);
-    return () => clearInterval(interval);
+    void fetchData();
+    const interval = window.setInterval(() => void fetchData(), 30_000);
+    return () => window.clearInterval(interval);
   }, [fetchData]);
 
   const handleAdd = () => {
-    const t = addInput.trim().toUpperCase();
-    if (t && !extraTickers.includes(t) && !stocks.find(s => s.ticker === t)) {
-      const updated = [...extraTickers, t];
-      setExtraTickers(updated);
-      lsSet(LS_EXTRA, updated);
+    const ticker = addInput.trim().toUpperCase();
+    if (!TICKER_PATTERN.test(ticker)) {
+      setAddMessage('Enter a ticker such as COIN or BRK.B.');
+      return;
     }
+    if (hidden.includes(ticker)) {
+      const nextHidden = hidden.filter((item) => item !== ticker);
+      setHidden(nextHidden);
+      lsSet(LS_HIDDEN, nextHidden);
+      setAddInput('');
+      setAddMessage('');
+      setShowAdd(false);
+      return;
+    }
+    if (extraTickers.includes(ticker) || stocks.some((stock) => stock.ticker === ticker)) {
+      setAddMessage(`${ticker} is already on the watchlist.`);
+      return;
+    }
+    if (!extraTickers.includes(ticker) && extraTickers.length >= MAX_EXTRA_TICKERS) {
+      setAddMessage(`You can add up to ${MAX_EXTRA_TICKERS} custom tickers.`);
+      return;
+    }
+
+    const nextHidden = hidden.filter((item) => item !== ticker);
+    const nextExtra = extraTickers.includes(ticker) ? extraTickers : [...extraTickers, ticker];
+    setHidden(nextHidden);
+    setExtraTickers(nextExtra);
+    lsSet(LS_HIDDEN, nextHidden);
+    lsSet(LS_EXTRA, nextExtra);
     setAddInput('');
+    setAddMessage('');
     setShowAdd(false);
+    void fetchData();
   };
 
   const handleRemove = (ticker: string) => {
-    const newHidden = [...hidden, ticker];
-    const newExtra  = extraTickers.filter(t => t !== ticker);
-    setHidden(newHidden);
-    setExtraTickers(newExtra);
-    lsSet(LS_HIDDEN, newHidden);
-    lsSet(LS_EXTRA, newExtra);
+    if (extraTickers.includes(ticker)) {
+      const nextExtra = extraTickers.filter((item) => item !== ticker);
+      const nextHidden = hidden.filter((item) => item !== ticker);
+      setExtraTickers(nextExtra);
+      setHidden(nextHidden);
+      setStocks((current) => current.filter((stock) => stock.ticker !== ticker));
+      lsSet(LS_EXTRA, nextExtra);
+      lsSet(LS_HIDDEN, nextHidden);
+      return;
+    }
+    const nextHidden = hidden.includes(ticker) ? hidden : [...hidden, ticker];
+    setHidden(nextHidden);
+    lsSet(LS_HIDDEN, nextHidden);
   };
 
   const handleRestore = (ticker: string) => {
-    const updated = hidden.filter(t => t !== ticker);
-    setHidden(updated);
-    lsSet(LS_HIDDEN, updated);
+    const nextHidden = hidden.filter((item) => item !== ticker);
+    setHidden(nextHidden);
+    lsSet(LS_HIDDEN, nextHidden);
   };
 
   const savePortfolio = () => {
     const parsed: Record<string, number> = {};
-    Object.entries(editPortfolio).forEach(([k, v]) => {
-      const n = parseFloat(v);
-      if (!isNaN(n) && n > 0) parsed[k] = n;
+    Object.entries(editPortfolio).forEach(([ticker, value]) => {
+      const shares = parseFloat(value);
+      if (!Number.isNaN(shares) && shares > 0) parsed[ticker] = shares;
     });
     setPortfolio(parsed);
     lsSet(LS_PORTFOLIO, parsed);
@@ -151,312 +321,424 @@ export default function StockDashboard() {
 
   const startEditPortfolio = () => {
     const draft: Record<string, string> = {};
-    stocks.filter(s => !hidden.includes(s.ticker)).forEach(s => {
-      draft[s.ticker] = portfolio[s.ticker]?.toString() || '';
+    stocks.filter((stock) => !hidden.includes(stock.ticker)).forEach((stock) => {
+      draft[stock.ticker] = portfolio[stock.ticker]?.toString() || '';
     });
     setEditPortfolio(draft);
     setEditingPortfolio(true);
   };
 
-  // Portfolio calculations
-  const portfolioValue = stocks.reduce((sum, s) => {
-    if (s.price && portfolio[s.ticker]) sum += s.price * portfolio[s.ticker];
+  const portfolioValue = stocks.reduce((sum, stock) => {
+    if (stock.price && portfolio[stock.ticker]) return sum + stock.price * portfolio[stock.ticker];
     return sum;
   }, 0);
 
-  const portfolioDayChange = stocks.reduce((sum, s) => {
-    if (s.price && s.change && portfolio[s.ticker]) {
-      const prevPrice = s.price / (1 + s.change / 100);
-      sum += (s.price - prevPrice) * portfolio[s.ticker];
+  const portfolioDayChange = stocks.reduce((sum, stock) => {
+    if (stock.price && stock.change && portfolio[stock.ticker]) {
+      const previous = stock.price / (1 + stock.change / 100);
+      return sum + (stock.price - previous) * portfolio[stock.ticker];
     }
     return sum;
   }, 0);
 
-  const hasPortfolio = Object.keys(portfolio).length > 0;
-
+  const hasPortfolio = Object.values(portfolio).some((shares) => shares > 0);
   const visibleStocks = stocks
-    .filter(s => !hidden.includes(s.ticker))
-    .filter(s => search === '' || s.ticker.toLowerCase().includes(search.toLowerCase()));
-
-  const filteredNews = newsFilter
-    ? news.filter(n => n.ticker === newsFilter)
-    : news;
-
+    .filter((stock) => !hidden.includes(stock.ticker))
+    .filter((stock) => search === '' || stock.ticker.toLowerCase().includes(search.toLowerCase()));
+  const filteredNews = newsFilter ? news.filter((item) => item.ticker === newsFilter) : news;
   const grouped = groupBy(visibleStocks, 'group');
-
-  const EXPLORE_SUGGESTIONS = [
-    'COIN','RBLX','UBER','ABNB','SPOT','ROKU','SQ','PYPL','SHOP','DDOG',
-    'ZS','OKTA','MDB','BILL','GTLB','ARM','SMCI','QBTS','RDW','IONQ',
-    'TSM','ASML','INTC','QCOM','AVGO','MRVL','ON','TXN','ADI','KLAC',
-  ];
-  const exploreFiltered = EXPLORE_SUGGESTIONS.filter(t =>
-    !stocks.find(s => s.ticker === t) &&
-    (exploreSearch === '' || t.includes(exploreSearch.toUpperCase()))
+  const exploreFiltered = EXPLORE_SUGGESTIONS.filter(
+    (ticker) => !stocks.some((stock) => stock.ticker === ticker) && (exploreSearch === '' || ticker.includes(exploreSearch.toUpperCase()))
   );
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-[#f5f5f7] flex items-center justify-center px-6">
-        <div className="text-center">
-          <div className="mx-auto h-10 w-10 animate-spin rounded-full border-4 border-neutral-300 border-t-neutral-900" />
-          <p className="mt-4 text-sm font-medium text-neutral-500">Loading live markets...</p>
-        </div>
-      </div>
-    );
-  }
+  const updatedLabel = updatedAt
+    ? new Date(updatedAt).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+    : null;
+  const showInitialSpinner = loading && stocks.length === 0 && !stocksError;
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-neutral-900">
-      <div className="mx-auto min-h-screen max-w-md bg-white shadow-sm md:max-w-2xl md:rounded-3xl md:my-6 md:min-h-[90vh] md:border md:border-neutral-200">
-
-        {/* Header */}
-        <div className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-neutral-100">
-          <div className="flex items-center justify-between px-5 pt-5 pb-2">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-white focus:px-3 focus:py-2"
+      >
+        Skip to content
+      </a>
+      <div className="mx-auto min-h-screen max-w-md bg-white md:my-6 md:min-h-[calc(100vh-3rem)] md:max-w-3xl md:rounded-3xl md:border md:border-neutral-200 md:shadow-sm lg:max-w-5xl">
+        <header className="sticky top-0 z-20 border-b border-neutral-100 bg-white/95 backdrop-blur md:rounded-t-3xl">
+          <div className="flex items-center justify-between gap-3 px-5 pb-2 pt-5">
             <button
-              onClick={() => setShowAdd(v => !v)}
-              className="text-2xl leading-none text-neutral-500 hover:text-neutral-900"
-              title="Add ticker"
-            >+</button>
+              type="button"
+              onClick={() => {
+                setShowAdd((open) => !open);
+                setAddMessage('');
+              }}
+              className="inline-flex min-h-11 min-w-11 items-center justify-center rounded-full text-2xl leading-none text-neutral-700 hover:bg-neutral-100 hover:text-neutral-900"
+              aria-expanded={showAdd}
+              aria-controls="add-ticker-panel"
+            >
+              <span aria-hidden="true">+</span>
+              <span className="sr-only">{showAdd ? 'Close add ticker' : 'Add a ticker'}</span>
+            </button>
             <div className="text-center">
-              <h1 className="text-2xl font-bold tracking-tight">Clouds</h1>
-              <p className="mt-0.5 text-[10px] text-neutral-400">Updated {lastUpdated || '—'}</p>
+              <h1 className="text-2xl font-bold tracking-tight">Quant View</h1>
+              <p className="text-xs text-neutral-600">Markets dashboard</p>
+              <p className="mt-0.5 text-xs text-neutral-600">
+                {refreshing && !showInitialSpinner ? 'Updating… ' : null}
+                {updatedLabel ? (
+                  <>
+                    Updated <time dateTime={updatedAt ?? undefined}>{updatedLabel}</time>
+                  </>
+                ) : (
+                  'Waiting for prices'
+                )}
+              </p>
             </div>
             <button
-              onClick={fetchData}
-              className="text-xs font-semibold text-neutral-400 hover:text-neutral-900 border border-neutral-200 rounded-full px-3 py-1"
-            >↻ Refresh</button>
+              type="button"
+              onClick={() => void fetchData()}
+              disabled={refreshing}
+              className="inline-flex min-h-11 items-center gap-1.5 rounded-full border border-neutral-300 px-3 py-1 text-sm font-semibold text-neutral-700 hover:text-neutral-900 disabled:opacity-60"
+            >
+              <RefreshIcon />
+              Refresh
+            </button>
           </div>
 
-          {/* Stale data warning */}
-          {isStale && (
-            <div className="mx-5 mb-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700 font-medium flex items-center gap-2">
-              ⚠️ Data may be delayed or unavailable. <button onClick={fetchData} className="underline">Retry</button>
+          {stocksError ? (
+            <div role="alert" className="mx-5 mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+              <p>{stocksError}</p>
+              <button type="button" onClick={() => void fetchData()} className="mt-1 font-semibold underline">
+                Retry
+              </button>
             </div>
-          )}
+          ) : null}
+          {!stocksError && stocksWarning ? (
+            <p className="mx-5 mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">{stocksWarning}</p>
+          ) : null}
 
-          {/* Add ticker input */}
-          {showAdd && (
-            <div className="px-5 pb-2 flex gap-2">
-              <input
-                className="flex-1 rounded-xl border border-neutral-200 px-3 py-2 text-sm outline-none focus:border-neutral-400"
-                placeholder="Enter ticker e.g. COIN"
-                value={addInput}
-                onChange={e => setAddInput(e.target.value.toUpperCase())}
-                onKeyDown={e => e.key === 'Enter' && handleAdd()}
-                autoFocus
-              />
-              <button
-                onClick={handleAdd}
-                className="rounded-xl bg-neutral-900 text-white px-4 py-2 text-sm font-semibold"
-              >Add</button>
-            </div>
-          )}
+          {showAdd ? (
+            <form
+              id="add-ticker-panel"
+              className="flex flex-col gap-2 px-5 pb-3"
+              onSubmit={(event) => {
+                event.preventDefault();
+                handleAdd();
+              }}
+            >
+              <div className="flex gap-2">
+                <label htmlFor="add-ticker" className="sr-only">
+                  Ticker symbol
+                </label>
+                <input
+                  id="add-ticker"
+                  className="min-h-11 flex-1 rounded-xl border border-neutral-300 px-3 py-2 text-sm outline-none"
+                  placeholder="Ticker, such as COIN"
+                  value={addInput}
+                  onChange={(event) => setAddInput(event.target.value.toUpperCase())}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') setShowAdd(false);
+                  }}
+                  autoComplete="off"
+                  autoCapitalize="characters"
+                  autoFocus
+                />
+                <button type="submit" className="min-h-11 rounded-xl bg-neutral-900 px-4 py-2 text-sm font-semibold text-white">
+                  Add
+                </button>
+              </div>
+              {addMessage ? <p className="text-sm text-amber-900">{addMessage}</p> : null}
+            </form>
+          ) : null}
 
-          {/* Search (watchlist only) */}
-          {tab === 'watchlist' && (
+          {tab === 'watchlist' ? (
             <div className="px-5 pb-3">
+              <label htmlFor="watchlist-search" className="sr-only">
+                Search tickers
+              </label>
               <input
-                className="w-full rounded-2xl bg-neutral-100 px-4 py-2.5 text-sm outline-none placeholder:text-neutral-400 focus:bg-neutral-50 focus:ring-1 focus:ring-neutral-300"
-                placeholder="🔍  Search tickers..."
+                id="watchlist-search"
+                type="search"
+                className="min-h-11 w-full rounded-2xl bg-neutral-100 px-4 py-2.5 text-sm outline-none placeholder:text-neutral-600"
+                placeholder="Search tickers"
                 value={search}
-                onChange={e => setSearch(e.target.value.toUpperCase())}
+                onChange={(event) => setSearch(event.target.value.toUpperCase())}
               />
             </div>
-          )}
+          ) : null}
 
-          {/* Tabs */}
-          <div className="px-5 pb-3 overflow-x-auto">
-            <div className="inline-flex rounded-2xl bg-neutral-100 p-1 gap-0.5">
-              {(['watchlist', 'portfolio', 'news', 'explore'] as Tab[]).map((t) => (
+          <div className="hidden px-5 pb-3 md:block">
+            <div role="tablist" aria-label="Sections" className="inline-flex gap-0.5 rounded-2xl bg-neutral-100 p-1">
+              {TABS.map((item) => (
                 <button
-                  key={t}
-                  onClick={() => setTab(t)}
-                  className={`rounded-2xl px-3 py-2 text-xs font-semibold capitalize transition whitespace-nowrap ${
-                    tab === t ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-500'
+                  key={item.id}
+                  type="button"
+                  role="tab"
+                  id={`tab-${item.id}`}
+                  aria-selected={tab === item.id}
+                  aria-controls={`panel-${item.id}`}
+                  onClick={() => {
+                    setTab(item.id);
+                    if (item.id === 'news') setNewsFilter('');
+                  }}
+                  className={`min-h-11 rounded-2xl px-4 py-2 text-sm font-semibold ${
+                    tab === item.id ? 'bg-white text-neutral-900 shadow-sm' : 'text-neutral-700'
                   }`}
                 >
-                  {t === 'watchlist' ? '📋 Watchlist' : t === 'news' ? '📰 News' : t === 'portfolio' ? '💼 Portfolio' : '🔭 Explore'}
+                  {item.label}
                 </button>
               ))}
             </div>
           </div>
-        </div>
+        </header>
 
-        {/* Main Content */}
-        <main className="pb-28">
+        <main id="main" className="pb-28 md:pb-10">
+          {showInitialSpinner ? (
+            <div role="status" className="flex flex-col items-center px-6 py-24 text-center">
+              <div
+                aria-hidden="true"
+                className="h-10 w-10 animate-spin rounded-full border-4 border-neutral-300 border-t-neutral-900 motion-reduce:animate-none"
+              />
+              <p className="mt-4 text-sm font-medium text-neutral-700">Loading live markets…</p>
+            </div>
+          ) : null}
 
-          {/* ── WATCHLIST TAB ── */}
-          {tab === 'watchlist' && (
-            <section className="px-4 pt-3 space-y-6">
-              {hidden.length > 0 && (
-                <div className="rounded-2xl bg-neutral-50 border border-neutral-100 p-3">
-                  <p className="text-xs text-neutral-400 mb-2 font-semibold uppercase tracking-wide">Hidden tickers</p>
+          {tab === 'watchlist' && !showInitialSpinner ? (
+            <section id="panel-watchlist" role="tabpanel" aria-labelledby="tab-watchlist" className="space-y-6 px-4 pt-3 lg:px-6">
+              {hidden.length > 0 ? (
+                <div className="rounded-2xl border border-neutral-200 bg-neutral-50 p-3">
+                  <h2 className="mb-2 text-xs font-bold uppercase tracking-wide text-neutral-600">Hidden tickers</h2>
                   <div className="flex flex-wrap gap-2">
-                    {hidden.map(t => (
-                      <button key={t} onClick={() => handleRestore(t)}
-                        className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-bold text-neutral-600 hover:bg-neutral-900 hover:text-white transition"
-                      >{t} ↩</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {Object.entries(grouped).map(([group, groupStocks]) => (
-                <div key={group}>
-                  <p className="px-1 pb-2 text-xs font-bold uppercase tracking-[0.18em] text-neutral-400">{group}</p>
-                  <div className="divide-y divide-neutral-100">
-                    {groupStocks.map((stock) => (
-                      <div key={stock.ticker}
-                        className="flex items-center justify-between gap-3 rounded-2xl px-2 py-3.5 transition hover:bg-neutral-50 active:bg-neutral-100 group"
+                    {hidden.map((ticker) => (
+                      <button
+                        key={ticker}
+                        type="button"
+                        onClick={() => handleRestore(ticker)}
+                        className="min-h-11 rounded-full border border-neutral-300 bg-white px-3 py-1 text-sm font-bold text-neutral-800 hover:bg-neutral-900 hover:text-white"
                       >
-                        <div className="flex min-w-0 items-center gap-3">
-                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
-                            {stock.ticker.slice(0, 4)}
-                          </div>
-                          <div className="min-w-0">
-                            <p className="text-base font-semibold tracking-tight text-neutral-900">{stock.ticker}</p>
-                            <button onClick={() => { setNewsFilter(stock.ticker); setTab('news'); }}
-                              className="text-xs text-blue-500 hover:underline">View news →</button>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-3">
-                          <div className="shrink-0 text-right">
-                            <p className="text-base font-semibold text-neutral-900">
-                              {stock.price !== null ? `$${stock.price.toFixed(2)}` : '—'}
-                            </p>
-                            <p className={`text-sm font-medium ${
-                              stock.change === null ? 'text-neutral-400' :
-                              stock.change >= 0 ? 'text-emerald-600' : 'text-red-500'
-                            }`}>
-                              {stock.change !== null ? `${stock.change >= 0 ? '+' : ''}${stock.change.toFixed(2)}%` : '—'}
-                            </p>
-                          </div>
-                          <button onClick={() => handleRemove(stock.ticker)}
-                            className="opacity-0 group-hover:opacity-100 transition text-neutral-300 hover:text-red-400 text-lg leading-none"
-                            title="Remove">✕</button>
-                        </div>
-                      </div>
+                        Restore {ticker}
+                      </button>
                     ))}
                   </div>
                 </div>
-              ))}
+              ) : null}
 
-              {visibleStocks.length === 0 && (
-                <p className="text-center text-sm text-neutral-400 py-10">No tickers match your search.</p>
-              )}
-            </section>
-          )}
+              {stocks.length === 0 && stocksError ? (
+                <p className="py-10 text-center text-sm text-neutral-700">Prices will show here after the connection is restored.</p>
+              ) : null}
 
-          {/* ── PORTFOLIO TAB ── */}
-          {tab === 'portfolio' && (
-            <section className="px-4 pt-4 space-y-4">
-              {/* Total value card */}
-              <div className="rounded-2xl bg-slate-900 text-white p-5">
-                <p className="text-xs font-semibold uppercase tracking-widest text-slate-400">Portfolio Value</p>
-                <p className="mt-1 text-3xl font-bold">${portfolioValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</p>
-                <p className={`mt-1 text-sm font-semibold ${ portfolioDayChange >= 0 ? 'text-emerald-400' : 'text-red-400' }`}>
-                  {portfolioDayChange >= 0 ? '+' : ''}${portfolioDayChange.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} today
+              <div className="space-y-6 lg:grid lg:grid-cols-2 lg:gap-x-10 lg:gap-y-8 lg:space-y-0">
+                {Object.entries(grouped).map(([group, groupStocks]) => (
+                  <div key={group}>
+                    <h2 className="px-1 pb-2 text-xs font-bold uppercase tracking-[0.18em] text-neutral-600">{group}</h2>
+                    <ul className="divide-y divide-neutral-100">
+                      {groupStocks.map((stock) => (
+                        <li key={stock.ticker} className="flex items-center justify-between gap-3 rounded-2xl px-2 py-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <TickerAvatar ticker={stock.ticker} />
+                            <div className="min-w-0">
+                              <p className="text-base font-semibold tracking-tight">{stock.ticker}</p>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setNewsFilter(stock.ticker);
+                                  setTab('news');
+                                }}
+                                className="text-sm font-medium text-blue-800 underline-offset-2 hover:underline"
+                              >
+                                View {stock.ticker} news
+                              </button>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <div className="shrink-0 text-right">
+                              <p className="text-base font-semibold">{formatPrice(stock.price)}</p>
+                              <p className={`text-sm font-medium ${changeClass(stock.change)}`}>{formatPercent(stock.change)}</p>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleRemove(stock.ticker)}
+                              className="min-h-11 rounded-full px-2 text-sm font-semibold text-neutral-700 hover:bg-neutral-100 hover:text-red-700"
+                            >
+                              {extraTickers.includes(stock.ticker) ? 'Remove' : 'Hide'}
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+
+              {visibleStocks.length === 0 && stocks.length > 0 ? (
+                <p className="py-10 text-center text-sm text-neutral-700">
+                  {search ? `No tickers match “${search}”.` : 'Every ticker is hidden. Restore one above.'}
                 </p>
-                {!hasPortfolio && <p className="mt-2 text-xs text-slate-400">Tap &quot;Edit Holdings&quot; to enter your share quantities.</p>}
+              ) : null}
+            </section>
+          ) : null}
+
+          {tab === 'portfolio' && !showInitialSpinner ? (
+            <section id="panel-portfolio" role="tabpanel" aria-labelledby="tab-portfolio" className="space-y-4 px-4 pt-4 lg:px-6">
+              <div className="rounded-2xl bg-slate-900 p-5 text-white">
+                <h2 className="text-xs font-semibold uppercase tracking-widest text-slate-300">Portfolio value</h2>
+                <p className="mt-1 text-3xl font-bold">{formatMoney(portfolioValue)}</p>
+                {hasPortfolio ? (
+                  <p className={`mt-1 text-sm font-semibold ${portfolioDayChange >= 0 ? 'text-emerald-300' : 'text-red-300'}`}>
+                    {portfolioDayChange >= 0 ? '+' : ''}
+                    {formatMoney(portfolioDayChange)} today
+                  </p>
+                ) : (
+                  <p className="mt-2 text-sm text-slate-300">Add share quantities to estimate a value. Nothing is sent to a server.</p>
+                )}
               </div>
 
               <div className="flex justify-end">
                 {editingPortfolio ? (
                   <div className="flex gap-2">
-                    <button onClick={() => setEditingPortfolio(false)}
-                      className="rounded-xl border border-neutral-200 px-4 py-2 text-sm font-semibold text-neutral-500">Cancel</button>
-                    <button onClick={savePortfolio}
-                      className="rounded-xl bg-neutral-900 text-white px-4 py-2 text-sm font-semibold">Save</button>
+                    <button
+                      type="button"
+                      onClick={() => setEditingPortfolio(false)}
+                      className="min-h-11 rounded-xl border border-neutral-300 px-4 py-2 text-sm font-semibold text-neutral-700"
+                    >
+                      Cancel
+                    </button>
+                    <button type="button" onClick={savePortfolio} className="min-h-11 rounded-xl bg-neutral-900 px-4 py-2 text-sm font-semibold text-white">
+                      Save
+                    </button>
                   </div>
                 ) : (
-                  <button onClick={startEditPortfolio}
-                    className="rounded-xl border border-neutral-200 px-4 py-2 text-sm font-semibold text-neutral-600 hover:bg-neutral-50">✏️ Edit Holdings</button>
+                  <button
+                    type="button"
+                    onClick={startEditPortfolio}
+                    className="min-h-11 rounded-xl border border-neutral-300 px-4 py-2 text-sm font-semibold text-neutral-800 hover:bg-neutral-50"
+                  >
+                    Edit holdings
+                  </button>
                 )}
               </div>
 
-              <div className="divide-y divide-neutral-100">
-                {stocks.filter(s => !hidden.includes(s.ticker)).map(stock => {
-                  const shares = portfolio[stock.ticker] || 0;
-                  const value  = stock.price ? stock.price * shares : 0;
-                  const dayPnl = (stock.price && stock.change && shares)
-                    ? ((stock.price / (1 + stock.change / 100)) * -1 + stock.price) * shares : 0;
-                  return (
-                    <div key={stock.ticker} className="flex items-center justify-between py-3.5 gap-3">
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white">
-                          {stock.ticker.slice(0, 4)}
-                        </div>
-                        <div>
-                          <p className="text-sm font-semibold">{stock.ticker}</p>
-                          {editingPortfolio ? (
-                            <input
-                              type="number" min="0" step="0.01"
-                              value={editPortfolio[stock.ticker] || ''}
-                              onChange={e => setEditPortfolio(prev => ({ ...prev, [stock.ticker]: e.target.value }))}
-                              placeholder="0 shares"
-                              className="mt-0.5 w-24 rounded-lg border border-neutral-200 px-2 py-1 text-xs outline-none focus:border-neutral-400"
-                            />
-                          ) : (
-                            <p className="text-xs text-neutral-400">{shares > 0 ? `${shares} shares` : 'Not tracked'}</p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <p className="text-sm font-semibold">{value > 0 ? `$${value.toFixed(2)}` : '—'}</p>
-                        {dayPnl !== 0 && (
-                          <p className={`text-xs font-medium ${ dayPnl >= 0 ? 'text-emerald-600' : 'text-red-500' }`}>
-                            {dayPnl >= 0 ? '+' : ''}${dayPnl.toFixed(2)}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
+              {stocks.length === 0 ? (
+                <p className="py-6 text-center text-sm text-neutral-700">Holdings need live prices before a value can be estimated.</p>
+              ) : (
+                <ul className="divide-y divide-neutral-100">
+                  {stocks
+                    .filter((stock) => !hidden.includes(stock.ticker))
+                    .map((stock) => {
+                      const shares = portfolio[stock.ticker] || 0;
+                      const value = stock.price ? stock.price * shares : 0;
+                      const dayPnl =
+                        stock.price && stock.change && shares
+                          ? (stock.price - stock.price / (1 + stock.change / 100)) * shares
+                          : 0;
+                      return (
+                        <li key={stock.ticker} className="flex items-center justify-between gap-3 py-3.5">
+                          <div className="flex items-center gap-3">
+                            <TickerAvatar ticker={stock.ticker} />
+                            <div>
+                              <p className="text-sm font-semibold">{stock.ticker}</p>
+                              {editingPortfolio ? (
+                                <div className="mt-1">
+                                  <label htmlFor={`shares-${stock.ticker}`} className="sr-only">
+                                    Shares of {stock.ticker}
+                                  </label>
+                                  <input
+                                    id={`shares-${stock.ticker}`}
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    inputMode="decimal"
+                                    value={editPortfolio[stock.ticker] || ''}
+                                    onChange={(event) => setEditPortfolio((prev) => ({ ...prev, [stock.ticker]: event.target.value }))}
+                                    placeholder="0"
+                                    className="w-28 rounded-lg border border-neutral-300 px-2 py-1 text-sm outline-none"
+                                  />
+                                </div>
+                              ) : (
+                                <p className="text-sm text-neutral-600">{shares > 0 ? `${shares} shares` : 'Not tracked'}</p>
+                              )}
+                            </div>
+                          </div>
+                          <div className="text-right">
+                            <p className="text-sm font-semibold">{shares > 0 ? formatMoney(value) : '—'}</p>
+                            {dayPnl !== 0 ? (
+                              <p className={`text-sm font-medium ${dayPnl > 0 ? 'text-emerald-700' : 'text-red-700'}`}>
+                                {dayPnl > 0 ? '+' : ''}
+                                {formatMoney(dayPnl)}
+                              </p>
+                            ) : null}
+                          </div>
+                        </li>
+                      );
+                    })}
+                </ul>
+              )}
             </section>
-          )}
+          ) : null}
 
-          {/* ── NEWS TAB ── */}
-          {tab === 'news' && (
-            <section className="px-4 pt-3">
-              <div className="flex items-center justify-between mb-3">
-                <p className="text-xs font-bold uppercase tracking-[0.18em] text-neutral-400">Latest News</p>
-                {newsFilter && (
-                  <button onClick={() => setNewsFilter('')}
-                    className="text-xs text-blue-500 hover:underline">Show all ✕</button>
-                )}
+          {tab === 'news' && !showInitialSpinner ? (
+            <section id="panel-news" role="tabpanel" aria-labelledby="tab-news" className="px-4 pt-3 lg:px-6">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <h2 className="text-xs font-bold uppercase tracking-[0.18em] text-neutral-600">Latest news</h2>
+                {newsFilter ? (
+                  <button type="button" onClick={() => setNewsFilter('')} className="min-h-11 text-sm font-semibold text-blue-800 underline">
+                    Show all news
+                  </button>
+                ) : null}
               </div>
-              <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-hide">
-                {['', ...Array.from(new Set(news.map(n => n.ticker)))].map(t => (
-                  <button key={t || 'all'} onClick={() => setNewsFilter(t)}
-                    className={`shrink-0 rounded-full px-3 py-1 text-xs font-bold border transition ${
-                      newsFilter === t ? 'bg-neutral-900 text-white border-neutral-900' : 'bg-white text-neutral-600 border-neutral-200'
-                    }`}>{t || 'All'}</button>
+              <p className="mb-3 text-sm text-neutral-600">
+                Recent headlines for the main names on the watchlist.
+              </p>
+              {newsError ? (
+                <p role="alert" className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                  {newsError}
+                </p>
+              ) : null}
+              <div className="mb-3 flex gap-2 overflow-x-auto pb-2" role="group" aria-label="Filter news by ticker">
+                {['', ...Array.from(new Set(news.map((item) => item.ticker)))].map((ticker) => (
+                  <button
+                    key={ticker || 'all'}
+                    type="button"
+                    onClick={() => setNewsFilter(ticker)}
+                    aria-pressed={newsFilter === ticker}
+                    className={`min-h-11 shrink-0 rounded-full border px-3 py-1 text-sm font-bold ${
+                      newsFilter === ticker ? 'border-neutral-900 bg-neutral-900 text-white' : 'border-neutral-300 bg-white text-neutral-800'
+                    }`}
+                  >
+                    {ticker || 'All'}
+                  </button>
                 ))}
               </div>
               {filteredNews.length === 0 ? (
-                <p className="text-sm text-neutral-400 text-center py-10">No news available right now.</p>
+                <p className="py-10 text-center text-sm text-neutral-700">
+                  {newsError
+                    ? 'Headlines will show here after the connection is restored.'
+                    : newsFilter
+                      ? `No recent headlines for ${newsFilter}.`
+                      : 'No recent headlines for this sample of the watchlist.'}
+                </p>
               ) : (
                 <div className="space-y-3">
                   {filteredNews.map((item) => {
                     const sentiment = getSentiment(item.headline);
+                    const href = safeHref(item.url);
                     return (
-                      <article key={item.id} className="rounded-2xl border border-neutral-100 bg-neutral-50 p-4">
-                        <div className="mb-2 flex items-center justify-between gap-3 flex-wrap">
-                          <span className="rounded-full bg-white border border-neutral-200 px-3 py-1 text-xs font-bold text-neutral-700 shadow-sm">{item.ticker}</span>
+                      <article key={item.id} className="rounded-2xl border border-neutral-200 bg-neutral-50 p-4">
+                        <div className="mb-2 flex flex-wrap items-center gap-2">
+                          <span className="rounded-full border border-neutral-200 bg-white px-3 py-1 text-xs font-bold text-neutral-800">
+                            {item.ticker}
+                          </span>
                           <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${sentiment.color}`}>{sentiment.label}</span>
-                          <span className="text-xs text-neutral-400 ml-auto">{item.time}</span>
+                          {item.time ? <span className="ml-auto text-xs text-neutral-600">{item.time}</span> : null}
                         </div>
-                        <h2 className="text-sm font-semibold leading-6 text-neutral-900">{item.headline}</h2>
-                        {item.summary && (
-                          <p className="mt-1 text-xs text-neutral-500 line-clamp-2">{item.summary}</p>
-                        )}
-                        <div className="mt-2 flex items-center justify-between">
-                          <p className="text-xs text-neutral-400">{item.source}</p>
-                          {item.url && (
-                            <a href={item.url} target="_blank" rel="noopener noreferrer"
-                              className="text-xs font-semibold text-blue-500 hover:underline">Read more →</a>
-                          )}
+                        <h3 className="text-sm font-semibold leading-6 text-neutral-900">{item.headline}</h3>
+                        {item.summary ? <p className="mt-1 line-clamp-2 text-sm text-neutral-700">{item.summary}</p> : null}
+                        <div className="mt-2 flex items-center justify-between gap-3">
+                          <p className="text-xs text-neutral-600">{item.source}</p>
+                          {href ? (
+                            <a href={href} target="_blank" rel="noopener noreferrer" className="text-sm font-semibold text-blue-800 underline">
+                              Read {item.ticker} article
+                            </a>
+                          ) : null}
                         </div>
                       </article>
                     );
@@ -464,73 +746,82 @@ export default function StockDashboard() {
                 </div>
               )}
             </section>
-          )}
+          ) : null}
 
-          {/* ── EXPLORE TAB ── */}
-          {tab === 'explore' && (
-            <section className="px-4 pt-4 space-y-4">
+          {tab === 'explore' && !showInitialSpinner ? (
+            <section id="panel-explore" role="tabpanel" aria-labelledby="tab-explore" className="space-y-4 px-4 pt-4 lg:px-6">
+              <label htmlFor="explore-search" className="sr-only">
+                Search suggested stocks
+              </label>
               <input
-                className="w-full rounded-2xl bg-neutral-100 px-4 py-2.5 text-sm outline-none placeholder:text-neutral-400 focus:bg-neutral-50 focus:ring-1 focus:ring-neutral-300"
-                placeholder="🔍  Search stocks to add..."
+                id="explore-search"
+                type="search"
+                className="min-h-11 w-full rounded-2xl bg-neutral-100 px-4 py-2.5 text-sm outline-none placeholder:text-neutral-600"
+                placeholder="Search stocks to add"
                 value={exploreSearch}
-                onChange={e => setExploreSearch(e.target.value)}
+                onChange={(event) => setExploreSearch(event.target.value)}
               />
-              <p className="text-xs font-bold uppercase tracking-[0.18em] text-neutral-400">Suggested Stocks</p>
-              <div className="grid grid-cols-2 gap-3">
-                {exploreFiltered.map(ticker => {
-                  const inWatchlist = stocks.find(s => s.ticker === ticker);
-                  return (
-                    <button
-                      key={ticker}
-                      onClick={() => {
-                        if (!inWatchlist) {
-                          const updated = [...extraTickers, ticker];
-                          setExtraTickers(updated);
-                          lsSet(LS_EXTRA, updated);
-                          fetchData();
-                        }
-                      }}
-                      className="rounded-2xl border border-neutral-200 bg-white p-4 text-left hover:bg-neutral-50 hover:border-neutral-300 transition"
-                    >
-                      <div className="flex h-10 w-10 items-center justify-center rounded-full bg-slate-900 text-xs font-bold text-white mb-2">
-                        {ticker.slice(0, 4)}
-                      </div>
-                      <p className="text-sm font-bold">{ticker}</p>
-                      <p className="text-xs text-emerald-600 font-semibold mt-1">+ Add to watchlist</p>
-                    </button>
-                  );
-                })}
+              <h2 className="text-xs font-bold uppercase tracking-[0.18em] text-neutral-600">Suggested stocks</h2>
+              <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+                {exploreFiltered.map((ticker) => (
+                  <button
+                    key={ticker}
+                    type="button"
+                    onClick={() => {
+                      if (extraTickers.length >= MAX_EXTRA_TICKERS) {
+                        setTab('watchlist');
+                        setShowAdd(true);
+                        setAddMessage(`You can add up to ${MAX_EXTRA_TICKERS} custom tickers.`);
+                        return;
+                      }
+                      const nextExtra = [...extraTickers, ticker];
+                      setExtraTickers(nextExtra);
+                      lsSet(LS_EXTRA, nextExtra);
+                      void fetchData();
+                    }}
+                    className="rounded-2xl border border-neutral-300 bg-white p-4 text-left hover:border-neutral-400 hover:bg-neutral-50"
+                  >
+                    <TickerAvatar ticker={ticker} />
+                    <p className="mt-2 text-sm font-bold">{ticker}</p>
+                    <p className="mt-1 text-sm font-semibold text-emerald-800">Add to watchlist</p>
+                  </button>
+                ))}
               </div>
-              {exploreFiltered.length === 0 && (
-                <p className="text-center text-sm text-neutral-400 py-10">All suggestions already in your watchlist!</p>
-              )}
+              {exploreFiltered.length === 0 ? (
+                <p className="py-10 text-center text-sm text-neutral-700">Every suggestion is already on the watchlist.</p>
+              ) : null}
             </section>
-          )}
+          ) : null}
 
+          <p className="px-5 pb-4 pt-8 text-center text-xs leading-5 text-neutral-600">
+            Prices and headlines come from Finnhub and can be delayed. This is not investment advice. Holdings stay in this browser only.
+          </p>
         </main>
 
-        {/* Bottom Nav */}
-        <nav className="fixed bottom-0 left-0 right-0 z-30 border-t border-neutral-200 bg-white/95 backdrop-blur safe-area-inset-bottom">
-          <div className="mx-auto grid max-w-md grid-cols-4 px-3 py-3">
-            <button onClick={() => setTab('watchlist')} className={`flex flex-col items-center gap-1 transition ${tab === 'watchlist' ? 'text-neutral-900' : 'text-neutral-400'}`}>
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={tab === 'watchlist' ? 2.5 : 1.8} d="M4 6h16M4 12h16M4 18h16" /></svg>
-              <span className="text-xs font-medium">Watchlist</span>
-            </button>
-            <button onClick={() => setTab('portfolio')} className={`flex flex-col items-center gap-1 transition ${tab === 'portfolio' ? 'text-neutral-900' : 'text-neutral-400'}`}>
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={tab === 'portfolio' ? 2.5 : 1.8} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" /></svg>
-              <span className="text-xs font-medium">Portfolio</span>
-            </button>
-            <button onClick={() => { setTab('news'); setNewsFilter(''); }} className={`flex flex-col items-center gap-1 transition ${tab === 'news' ? 'text-neutral-900' : 'text-neutral-400'}`}>
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={tab === 'news' ? 2.5 : 1.8} d="M19 20H5a2 2 0 01-2-2V6a2 2 0 012-2h10a2 2 0 012 2v1m2 13a2 2 0 01-2-2V7m2 13a2 2 0 002-2V9a2 2 0 00-2-2h-2m-4-3H9M7 16h6M7 12h6m-6 4h6" /></svg>
-              <span className="text-xs font-medium">News</span>
-            </button>
-            <button onClick={() => setTab('explore')} className={`flex flex-col items-center gap-1 transition ${tab === 'explore' ? 'text-neutral-900' : 'text-neutral-400'}`}>
-              <svg className="h-6 w-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={tab === 'explore' ? 2.5 : 1.8} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
-              <span className="text-xs font-medium">Explore</span>
-            </button>
+        <nav
+          aria-label="Primary"
+          className="fixed inset-x-0 bottom-0 z-30 border-t border-neutral-200 bg-white/95 backdrop-blur md:hidden"
+          style={{ paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))' }}
+        >
+          <div className="mx-auto grid max-w-md grid-cols-4 px-2 pt-2">
+            {TABS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => {
+                  setTab(item.id);
+                  if (item.id === 'news') setNewsFilter('');
+                }}
+                aria-current={tab === item.id ? 'page' : undefined}
+                className={`flex min-h-11 flex-col items-center justify-center gap-1 text-xs font-medium ${
+                  tab === item.id ? 'text-neutral-900' : 'text-neutral-600'
+                }`}
+              >
+                {item.label}
+              </button>
+            ))}
           </div>
         </nav>
-
       </div>
     </div>
   );
